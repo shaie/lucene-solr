@@ -18,9 +18,12 @@ package org.apache.solr.common.cloud;
  */
 
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -68,6 +71,9 @@ public class ZkStateReader {
   public static final String LIVE_NODES_ZKNODE = "/live_nodes";
   public static final String ALIASES = "/aliases.json";
   public static final String CLUSTER_STATE = "/clusterstate.json";
+  public static final String CLUSTER_PROPS = "/clusterprops.json";
+
+
   public static final String ROLES = "/roles.json";
 
   public static final String RECOVERING = "recovering";
@@ -140,10 +146,15 @@ public class ZkStateReader {
       configName = props.getStr(CONFIGNAME_PROP);
     }
 
-    if (configName != null && !zkClient.exists(CONFIGS_ZKNODE + "/" + configName, true)) {
-      log.error("Specified config does not exist in ZooKeeper:" + configName);
-      throw new ZooKeeperException(ErrorCode.SERVER_ERROR,
-          "Specified config does not exist in ZooKeeper:" + configName);
+    if (configName != null) {
+      if (!zkClient.exists(CONFIGS_ZKNODE + "/" + configName, true)) {
+        log.error("Specified config does not exist in ZooKeeper:" + configName);
+        throw new ZooKeeperException(ErrorCode.SERVER_ERROR,
+            "Specified config does not exist in ZooKeeper:" + configName);
+      } else if (log.isInfoEnabled()) {
+        log.info("path={} {}={} specified config exists in ZooKeeper",
+            new Object[] {path, CONFIGNAME_PROP, configName});
+      }
     }
 
     return configName;
@@ -517,7 +528,8 @@ public class ZkStateReader {
       }
       Thread.sleep(50);
     }
-    throw new SolrException(ErrorCode.SERVICE_UNAVAILABLE, "No registered leader was found, collection:" + collection + " slice:" + shard);
+    throw new SolrException(ErrorCode.SERVICE_UNAVAILABLE, "No registered leader was found after waiting for "
+        + timeout + "ms " + ", collection: " + collection + " slice: " + shard);
   }
 
   /**
@@ -594,6 +606,43 @@ public class ZkStateReader {
     Aliases aliases = ClusterState.load(data);
 
     ZkStateReader.this.aliases = aliases;
+  }
+  public Map getClusterProps(){
+    Map result = null;
+    try {
+      if(getZkClient().exists(ZkStateReader.CLUSTER_PROPS,true)){
+        result = (Map) ZkStateReader.fromJSON(getZkClient().getData(ZkStateReader.CLUSTER_PROPS, null, new Stat(), true)) ;
+      } else {
+        result= new LinkedHashMap();
+      }
+      return result;
+    } catch (Exception e) {
+      throw new SolrException(ErrorCode.SERVER_ERROR,"Error reading cluster properties",e) ;
+    }
+  }
+  
+  /**
+   * Returns the baseURL corrisponding to a given node's nodeName --
+   * NOTE: does not (currently) imply that the nodeName (or resulting 
+   * baseURL) exists in the cluster.
+   * @lucene.experimental
+   */
+  public String getBaseUrlForNodeName(final String nodeName) {
+    final int _offset = nodeName.indexOf("_");
+    if (_offset < 0) {
+      throw new IllegalArgumentException("nodeName does not contain expected '_' seperator: " + nodeName);
+    }
+    final String hostAndPort = nodeName.substring(0,_offset);
+    try {
+      final String path = URLDecoder.decode(nodeName.substring(1+_offset), "UTF-8");
+      String urlScheme = (String) getClusterProps().get("urlScheme");
+      if(urlScheme == null) {
+        urlScheme = "http";
+      }
+      return urlScheme + "://" + hostAndPort + (path.isEmpty() ? "" : ("/" + path));
+    } catch (UnsupportedEncodingException e) {
+      throw new IllegalStateException("JVM Does not seem to support UTF-8", e);
+    }
   }
   
 }

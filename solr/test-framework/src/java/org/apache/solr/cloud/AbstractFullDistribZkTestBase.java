@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -70,6 +71,7 @@ import org.apache.solr.core.SolrCore;
 import org.apache.solr.core.SolrResourceLoader;
 import org.apache.solr.servlet.SolrDispatchFilter;
 import org.apache.solr.update.DirectUpdateHandler2;
+import org.apache.zookeeper.CreateMode;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
@@ -201,6 +203,19 @@ public abstract class AbstractFullDistribZkTestBase extends AbstractDistribZkTes
       System.setProperty("numShards", Integer.toString(sliceCount));
     } else {
       System.clearProperty("numShards");
+    }
+    
+    if (isSSLMode()) {
+      System.clearProperty("urlScheme");
+      ZkStateReader zkStateReader = new ZkStateReader(zkServer.getZkAddress(),
+          AbstractZkTestCase.TIMEOUT, AbstractZkTestCase.TIMEOUT);
+      try {
+        zkStateReader.getZkClient().create(ZkStateReader.CLUSTER_PROPS,
+          ZkStateReader.toJSON(Collections.singletonMap("urlScheme","https")), 
+          CreateMode.PERSISTENT, true);
+      } finally {
+        zkStateReader.close();
+      }
     }
   }
   
@@ -392,8 +407,8 @@ public abstract class AbstractFullDistribZkTestBase extends AbstractDistribZkTes
       JettySolrRunner j = this.jettys.get(i);
       JettySolrRunner j2 = this.jettys.get(i + (numJettys / 2 - 1));
       if (sb.length() > 0) sb.append(',');
-      sb.append("127.0.0.1:").append(j.getLocalPort()).append(context);
-      sb.append("|127.0.0.1:").append(j2.getLocalPort()).append(context);
+      sb.append(buildUrl(j.getLocalPort()));
+      sb.append("|").append(buildUrl(j2.getLocalPort()));
     }
     shards = sb.toString();
     
@@ -454,7 +469,7 @@ public abstract class AbstractFullDistribZkTestBase extends AbstractDistribZkTes
       String solrConfigOverride) throws Exception {
     
     JettySolrRunner jetty = new JettySolrRunner(getSolrHome(), context, 0,
-        solrConfigOverride, null, false, getExtraServlets(), null, getExtraRequestFilters());
+        solrConfigOverride, null, false, getExtraServlets(), sslConfig, getExtraRequestFilters());
     jetty.setShards(shardList);
     jetty.setDataDir(getDataDir(dataDir));
     jetty.start();
@@ -468,7 +483,7 @@ public abstract class AbstractFullDistribZkTestBase extends AbstractDistribZkTes
       solrHome = getRelativeSolrHomePath(solrHome);
     }
     
-    JettySolrRunner jetty = new JettySolrRunner(solrHome.getPath(), context, 0, solrConfigOverride, schemaOverride, false, getExtraServlets(), null, getExtraRequestFilters());
+    JettySolrRunner jetty = new JettySolrRunner(solrHome.getPath(), context, 0, solrConfigOverride, schemaOverride, false, getExtraServlets(), sslConfig, getExtraRequestFilters());
     jetty.setShards(shardList);
     jetty.setDataDir(getDataDir(dataDir));
     jetty.start();
@@ -1659,8 +1674,8 @@ public abstract class AbstractFullDistribZkTestBase extends AbstractDistribZkTes
   protected SolrServer createNewSolrServer(int port) {
     try {
       // setup the server...
-      String url = "http://127.0.0.1:" + port + context + 
-        (context.endsWith("/") ? "" : "/") + DEFAULT_COLLECTION;
+      String baseUrl = buildUrl(port);
+      String url = baseUrl + (baseUrl.endsWith("/") ? "" : "/") + DEFAULT_COLLECTION;
       HttpSolrServer s = new HttpSolrServer(url);
       s.setConnectionTimeout(DEFAULT_CONNECTION_TIMEOUT);
       s.setSoTimeout(60000);
@@ -1773,6 +1788,7 @@ public abstract class AbstractFullDistribZkTestBase extends AbstractDistribZkTes
     }
     return commondCloudSolrServer;
   }
+  
   public static String getUrlFromZk(ClusterState clusterState, String collection) {
     Map<String,Slice> slices = clusterState.getCollection(collection).getSlicesMap();
 

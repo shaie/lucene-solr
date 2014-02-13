@@ -17,6 +17,7 @@ package org.apache.solr.cloud;
  * limitations under the License.
  */
 
+import com.google.common.collect.ImmutableSet;
 import org.apache.solr.client.solrj.SolrResponse;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.impl.HttpSolrServer;
@@ -44,6 +45,7 @@ import org.apache.solr.common.cloud.ZkCoreNodeProps;
 import org.apache.solr.common.cloud.ZkNodeProps;
 import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.common.cloud.ZooKeeperException;
+import org.apache.solr.common.params.CollectionParams;
 import org.apache.solr.common.params.CoreAdminParams;
 import org.apache.solr.common.params.CoreAdminParams.CoreAdminAction;
 import org.apache.solr.common.params.MapSolrParams;
@@ -56,7 +58,9 @@ import org.apache.solr.handler.component.ShardRequest;
 import org.apache.solr.handler.component.ShardResponse;
 import org.apache.solr.update.SolrIndexSplitter;
 import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,6 +72,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -120,6 +125,8 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
   public static final String COLL_CONF = "collection.configName";
 
   public static final String COLL_PROP_PREFIX = "property.";
+
+  public static final Set<String> KNOWN_CLUSTER_PROPS = ImmutableSet.of("legacyCloud");
 
   public static final Map<String,Object> COLL_PROPS = ZkNodeProps.makeMap(
       ROUTER, DocRouter.DEFAULT_NAME,
@@ -396,6 +403,8 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
         deleteReplica(zkStateReader.getClusterState(), message, results);
       } else if (MIGRATE.equals(operation)) {
         migrate(zkStateReader.getClusterState(), message, results);
+      } else if(CollectionParams.CollectionAction.CLUSTERPROP.toString().equalsIgnoreCase(operation)){
+        handleProp(message,results);
       } else if(REMOVEROLE.toString().toLowerCase(Locale.ROOT).equals(operation) || ADDROLE.toString().toLowerCase(Locale.ROOT).equals(operation) ){
         processRoleCommand(message, operation);
       }
@@ -416,6 +425,21 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
     } 
     
     return new OverseerSolrResponse(results);
+  }
+
+  private void handleProp(ZkNodeProps message, NamedList results) throws KeeperException, InterruptedException {
+    String name = message.getStr("name");
+    String val = message.getStr("val");
+    Map m = zkStateReader.getClusterProps();
+    if(val ==null) m.remove(name);
+    else m.put(name,val);
+    if(zkStateReader.getZkClient().exists(ZkStateReader.CLUSTER_PROPS,true))
+      zkStateReader.getZkClient().setData(ZkStateReader.CLUSTER_PROPS,ZkStateReader.toJSON(m),true);
+    else
+      zkStateReader.getZkClient().create(ZkStateReader.CLUSTER_PROPS, ZkStateReader.toJSON(m),CreateMode.PERSISTENT, true);
+
+
+
   }
   private void processRoleCommand(ZkNodeProps message, String operation) throws KeeperException, InterruptedException {
     SolrZkClient zkClient = zkStateReader.getZkClient();
@@ -487,7 +511,6 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
     
     ShardRequest sreq = new ShardRequest();
     sreq.purpose = 1;
-    if (baseUrl.startsWith("http://")) baseUrl = baseUrl.substring(7);
     sreq.shards = new String[] {baseUrl};
     sreq.actualShards = sreq.shards;
     sreq.params = new ModifiableSolrParams(new MapSolrParams(m));
@@ -741,9 +764,7 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
       ShardRequest sreq = new ShardRequest();
       params.set("qt", adminPath);
       sreq.purpose = 1;
-      String replica = zkStateReader.getZkClient()
-          .getBaseUrlForNodeName(nodeName);
-      if (replica.startsWith("http://")) replica = replica.substring(7);
+      String replica = zkStateReader.getBaseUrlForNodeName(nodeName);
       sreq.shards = new String[]{replica};
       sreq.actualShards = sreq.shards;
       sreq.params = params;
@@ -808,7 +829,13 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
     }
     
     // find the leader for the shard
-    Replica parentShardLeader = clusterState.getLeader(collectionName, slice);
+    Replica parentShardLeader = null;
+    try {
+      parentShardLeader = zkStateReader.getLeaderRetry(collectionName, slice, 10000);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+
     DocRouter.Range range = parentSlice.getRange();
     if (range == null) {
       range = new PlainIdRouter().fullRange();
@@ -941,7 +968,7 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
       for (String subShardName : subShardNames) {
         // wait for parent leader to acknowledge the sub-shard core
         log.info("Asking parent leader to wait for: " + subShardName + " to be alive on: " + nodeName);
-        String coreNodeName = waitForCoreNodeName(collection, zkStateReader.getZkClient().getBaseUrlForNodeName(nodeName), subShardName);
+        String coreNodeName = waitForCoreNodeName(collection, zkStateReader.getBaseUrlForNodeName(nodeName), subShardName);
         CoreAdminRequest.WaitForState cmd = new CoreAdminRequest.WaitForState();
         cmd.setCoreName(subShardName);
         cmd.setNodeName(nodeName);
@@ -1050,7 +1077,7 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
 
           sendShardRequest(subShardNodeName, params);
 
-          String coreNodeName = waitForCoreNodeName(collection, zkStateReader.getZkClient().getBaseUrlForNodeName(subShardNodeName), shardName);
+          String coreNodeName = waitForCoreNodeName(collection, zkStateReader.getBaseUrlForNodeName(subShardNodeName), shardName);
           // wait for the replicas to be seen as active on sub shard leader
           log.info("Asking sub shard leader to wait for: " + shardName + " to be alive on: " + subShardNodeName);
           CoreAdminRequest.WaitForState cmd = new CoreAdminRequest.WaitForState();
@@ -1323,7 +1350,7 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
     }
     log.info("Common hash range between source shard: {} and target shard: {} = " + splitRange, sourceSlice.getName(), targetSlice.getName());
 
-    Replica targetLeader = targetSlice.getLeader();
+    Replica targetLeader = zkStateReader.getLeaderRetry(targetCollection.getName(), targetSlice.getName(), 10000);
 
     log.info("Asking target leader node: " + targetLeader.getNodeName() + " core: "
         + targetLeader.getStr("core") + " to buffer updates");
@@ -1367,7 +1394,7 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
     log.info("Routing rule added successfully");
 
     // Create temp core on source shard
-    Replica sourceLeader = sourceSlice.getLeader();
+    Replica sourceLeader = zkStateReader.getLeaderRetry(sourceCollection.getName(), sourceSlice.getName(), 10000);
 
     // create a temporary collection with just one node on the shard leader
     String configName = zkStateReader.readConfigName(sourceCollection.getName());
@@ -1383,11 +1410,11 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
     // refresh cluster state
     clusterState = zkStateReader.getClusterState();
     Slice tempSourceSlice = clusterState.getCollection(tempSourceCollectionName).getSlices().iterator().next();
-    Replica tempSourceLeader = zkStateReader.getLeaderRetry(tempSourceCollectionName, tempSourceSlice.getName(), 60000);
+    Replica tempSourceLeader = zkStateReader.getLeaderRetry(tempSourceCollectionName, tempSourceSlice.getName(), 120000);
 
     String tempCollectionReplica1 = tempSourceCollectionName + "_" + tempSourceSlice.getName() + "_replica1";
     String coreNodeName = waitForCoreNodeName(clusterState.getCollection(tempSourceCollectionName),
-        zkStateReader.getZkClient().getBaseUrlForNodeName(sourceLeader.getNodeName()), tempCollectionReplica1);
+        zkStateReader.getBaseUrlForNodeName(sourceLeader.getNodeName()), tempCollectionReplica1);
     // wait for the replicas to be seen as active on temp source leader
     log.info("Asking source leader to wait for: " + tempCollectionReplica1 + " to be alive on: " + sourceLeader.getNodeName());
     CoreAdminRequest.WaitForState cmd = new CoreAdminRequest.WaitForState();
@@ -1424,7 +1451,7 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
     sendShardRequest(targetLeader.getNodeName(), params);
 
     coreNodeName = waitForCoreNodeName(clusterState.getCollection(tempSourceCollectionName),
-        zkStateReader.getZkClient().getBaseUrlForNodeName(targetLeader.getNodeName()), tempCollectionReplica2);
+        zkStateReader.getBaseUrlForNodeName(targetLeader.getNodeName()), tempCollectionReplica2);
     // wait for the replicas to be seen as active on temp source leader
     log.info("Asking temp source leader to wait for: " + tempCollectionReplica2 + " to be alive on: " + targetLeader.getNodeName());
     cmd = new CoreAdminRequest.WaitForState();
@@ -1488,8 +1515,7 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
     ShardRequest sreq = new ShardRequest();
     params.set("qt", adminPath);
     sreq.purpose = 1;
-    String replica = zkStateReader.getZkClient().getBaseUrlForNodeName(nodeName);
-    if (replica.startsWith("http://")) replica = replica.substring(7);
+    String replica = zkStateReader.getBaseUrlForNodeName(nodeName);
     sreq.shards = new String[]{replica};
     sreq.actualShards = sreq.shards;
     sreq.params = params;
@@ -1623,9 +1649,7 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
           ShardRequest sreq = new ShardRequest();
           params.set("qt", adminPath);
           sreq.purpose = 1;
-          String replica = zkStateReader.getZkClient()
-            .getBaseUrlForNodeName(nodeName);
-          if (replica.startsWith("http://")) replica = replica.substring(7);
+          String replica = zkStateReader.getBaseUrlForNodeName(nodeName);
           sreq.shards = new String[] {replica};
           sreq.actualShards = sreq.shards;
           sreq.params = params;
@@ -1723,8 +1747,6 @@ public class OverseerCollectionProcessor implements Runnable, ClosableThread {
         // yes, they must use same admin handler path everywhere...
         cloneParams.set("qt", adminPath);
         sreq.purpose = 1;
-        // TODO: this sucks
-        if (replica.startsWith("http://")) replica = replica.substring(7);
         sreq.shards = new String[] {replica};
         sreq.actualShards = sreq.shards;
         sreq.params = cloneParams;

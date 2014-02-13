@@ -48,10 +48,10 @@ API Changes
   this term index, pass it directly in your codec, where it can also be configured
   per-field. (Robert Muir)
 
-* LUCENE-5388: Remove Reader from Tokenizer's constructor. 
+* LUCENE-5388: Remove Reader from Tokenizer's constructor and from
+  Analyzer's createComponents. TokenStreams now always get their input
+  via setReader.  
   (Benson Margulies via Robert Muir - pull request #16)
-
-* LUCENE-5405: Make ShingleAnalzyerWrapper.getWrappedAnalyzer() public final (gsingers)
 
 Documentation
 
@@ -76,6 +76,10 @@ New Features
   DocumentExpressionDictionary are now lenient for dirty documents
   (missing the term, weight or payload).  (Areek Zillur via
   Mike McCandless)
+
+* LUCENE-5404: Add .getCount method to all suggesters (Lookup); persist count 
+  metadata on .store(); Dictionary returns InputIterator; Dictionary.getWordIterator
+  renamed to .getEntryIterator. (Areek Zillur)
 
 * SOLR-1871: The RangeMapFloatFunction accepts an arbitrary ValueSource
   as target and default values. (Chris Harris, shalin)
@@ -110,6 +114,13 @@ New Features
   fixes too. More info:
   https://github.com/spatial4j/spatial4j/blob/master/CHANGES.md  (David Smiley)
 
+* LUCENE-5405: If an analysis component throws an exception, Lucene
+  logs the field name to the info stream to assist in
+  diagnosis. (Benson Margulies)
+
+* LUCENE-5406: Make ShingleAnalzyerWrapper.getWrappedAnalyzer() public
+  final (gsingers)
+
 * LUCENE-5415: Add multitermquery (wildcards,prefix,etc) to PostingsHighlighter.
   (Mike McCandless, Robert Muir)
 
@@ -127,6 +138,28 @@ New Features
 
 * LUCENE-5410: Add fuzzy and near support via '~' operator to SimpleQueryParser.
   (Lee Hinman via Robert Muir)
+
+* LUCENE-5426: Make SortedSetDocValuesReaderState abstract to allow
+  custom implementations for Lucene doc values faceting (John Wang via
+  Mike McCandless)
+
+* LUCENE-5434: NRT support for file systems that do no have delete on last
+  close or cannot delete while referenced semantics. 
+  (Mark Miller, Mike McCandless)
+
+* LUCENE-5418: Drilling down or sideways on a Lucene facet range
+  (using Range.getFilter()) is now faster for costly filters (uses
+  random access, not iteration); range facet counts now accept a
+  fast-match filter to avoid computing the value for documents that
+  are out of bounds, e.g. using a bounding box filter with distance
+  range faceting.  (Mike McCandless)
+
+* LUCENE-5440: Add LongBitSet for managing more than 2.1B bits (otherwise use
+  FixedBitSet). (Shai Erera)
+
+* LUCENE-5437: ASCIIFoldingFilter now has an option to preserve the original token
+  and emit it on the same position as the folded token only if the actual token was
+  folded. (Simon Willnauer, Nik Everett) 
 
 Build
 
@@ -224,6 +257,12 @@ Bug fixes
   to byte, before calling Similarity.decodeNormValue.  (Peng Cheng via
   Mike McCandless)
 
+* LUCENE-5436: RefrenceManager#accquire can result in infinite loop if
+  managed resource is abused outside of the RefrenceManager. Decrementing
+  the reference without a corresponding incRef() call can cause an infinite
+  loop. ReferenceManager now throws IllegalStateException if currently managed
+  resources ref count is 0. (Simon Willnauer)
+
 API Changes
 
 * LUCENE-5339: The facet module was simplified/reworked to make the
@@ -246,6 +285,10 @@ API Changes
   responsible for encoding/decoding a block of terms.  Instead, they
   should encode/decode each term to/from a long[] and byte[].  (Han
   Jiang, Mike McCandless)
+  
+* LUCENE-5425: FacetsCollector and MatchingDocs use a general DocIdSet, 
+  allowing for custom implementations to be used when faceting.
+  (John Wang, Lei Wang, Shai Erera) 
 
 Optimizations
 
@@ -354,7 +397,7 @@ New Features
 
 * LUCENE-5323: Add .sizeInBytes method to all suggesters (Lookup).
   (Areek Zillur via Mike McCandless)
-
+  
 * LUCENE-5312: Add BlockJoinSorter, a new Sorter implementation that makes sure
   to never split up blocks of documents indexed with IndexWriter.addDocuments.
   (Adrien Grand)

@@ -45,10 +45,13 @@ import org.apache.commons.io.FileUtils;
 import org.apache.lucene.analysis.MockAnalyzer;
 import org.apache.lucene.analysis.MockTokenizer;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.util.Constants;
 import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.LuceneTestCase;
 import org.apache.lucene.util.QuickPatchThreadsFilter;
 import org.apache.lucene.util._TestUtil;
+import org.apache.solr.client.solrj.impl.HttpClientConfigurer;
+import org.apache.solr.client.solrj.impl.HttpClientUtil;
 import org.apache.solr.client.solrj.util.ClientUtils;
 import org.apache.solr.cloud.IpTables;
 import org.apache.solr.common.SolrDocument;
@@ -78,6 +81,7 @@ import org.apache.solr.search.SolrIndexSearcher;
 import org.apache.solr.servlet.DirectSolrConnection;
 import org.apache.solr.util.AbstractSolrTestCase;
 import org.apache.solr.util.RevertDefaultThreadHandlerRule;
+import org.apache.solr.util.SSLTestConfig;
 import org.apache.solr.util.TestHarness;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -108,8 +112,12 @@ import com.carrotsearch.randomizedtesting.rules.SystemPropertiesRestoreRule;
 })
 public abstract class SolrTestCaseJ4 extends LuceneTestCase {
   private static String coreName = ConfigSolrXmlOld.DEFAULT_DEFAULT_CORE_NAME;
-  public static int DEFAULT_CONNECTION_TIMEOUT = 30000;  // default socket connection timeout in ms
+  public static int DEFAULT_CONNECTION_TIMEOUT = 45000;  // default socket connection timeout in ms
 
+  // these are meant to be accessed sequentially, but are volatile just to ensure any test
+  // thread will read the latest value
+  protected static volatile boolean ALLOW_SSL = true;
+  protected static volatile SSLTestConfig sslConfig;
 
   @ClassRule
   public static TestRule solrClassRules = 
@@ -132,6 +140,14 @@ public abstract class SolrTestCaseJ4 extends LuceneTestCase {
     startTrackingZkClients();
     ignoreException("ignore_exception");
     newRandomConfig();
+    
+    sslConfig = buildSSLConfig();
+    //will use ssl specific or default depending on sslConfig
+    HttpClientUtil.setConfigurer(sslConfig.getHttpClientConfigurer());
+    if(isSSLMode()) {
+      // SolrCloud tests should usually clear this
+      System.setProperty("urlScheme", "https");
+    }
   }
 
   @AfterClass
@@ -147,8 +163,22 @@ public abstract class SolrTestCaseJ4 extends LuceneTestCase {
     System.clearProperty("tests.shardhandler.randomSeed");
     System.clearProperty("enable.update.log");
     System.clearProperty("useCompoundFile");
+    System.clearProperty("urlScheme");
+    
+    if(isSSLMode()) {
+      HttpClientUtil.setConfigurer(new HttpClientConfigurer());
+    }
+    // clean up static
+    sslConfig = null;
+    
+    // reset SSL
+    ALLOW_SSL = true;
     
     IpTables.unblockAllPorts();
+  }
+  
+  protected static boolean isSSLMode() {
+    return sslConfig != null && sslConfig.isSSLMode();
   }
 
   private static boolean changedFactory = false;
@@ -177,6 +207,27 @@ public abstract class SolrTestCaseJ4 extends LuceneTestCase {
     }
   }
 
+  private static SSLTestConfig buildSSLConfig() {
+    // test has been disabled
+    if (!ALLOW_SSL) {
+      return new SSLTestConfig();
+    }
+    
+    final boolean trySsl = random().nextBoolean();
+    boolean trySslClientAuth = random().nextBoolean();
+    if (Constants.MAC_OS_X) {
+      trySslClientAuth = false;
+    }
+    
+    log.info("Randomized ssl ({}) and clientAuth ({})", trySsl,
+        trySslClientAuth);
+    
+    return new SSLTestConfig(trySsl, trySslClientAuth);
+  }
+  
+  protected static String buildUrl(final int port, final String context) {
+    return (isSSLMode() ? "https" : "http") + "://127.0.0.1:" + port + context;
+  }
 
   protected static MockTokenizer whitespaceMockTokenizer(Reader input) throws IOException {
     MockTokenizer mockTokenizer = new MockTokenizer(MockTokenizer.WHITESPACE, false);
