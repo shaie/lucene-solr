@@ -330,6 +330,18 @@ Bug Fixes
 
 * SOLR-5721: ConnectionManager can become stuck in likeExpired.
   (Gregory Chanan via Mark Miller)
+  
+* SOLR-5731: In ConnectionManager, we should catch and only log exceptions
+  from BeforeReconnect. (Mark Miller)
+
+* SOLR-5718: Make LBHttpSolrServer zombie checks non-distrib and non-scoring.
+  (Christine Poerschke via Mark Miller)
+
+* SOLR-5727: LBHttpSolrServer should only retry on Connection exceptions when 
+  sending updates. Affects CloudSolrServer. (Mark Miller)
+
+* SOLR-5739: Sub-shards created by shard splitting have their update log set
+  to buffering mode on restarts. (Günther Ruck, shalin)
 
 Optimizations
 ----------------------
@@ -355,6 +367,10 @@ Optimizations
 
 * SOLR-5624: Enable QueryResultCache for CollapsingQParserPlugin.
   (David Boychuck, Joel Bernstein)
+
+* LUCENE-5440: DocSet decoupled from OpenBitSet. DocSetBase moved to use 
+  FixedBitSet instead of OpenBitSet. As a result BitDocSet now only works 
+  with FixedBitSet. (Shai Erera)
 
 Other Changes
 ---------------------
